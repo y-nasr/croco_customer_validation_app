@@ -1,0 +1,2 @@
+frappe
+phonenumbers>=8.13

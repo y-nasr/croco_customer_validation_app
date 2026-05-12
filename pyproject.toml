@@ -1,0 +1,19 @@
+[project]
+name = "customer_mobile_validation"
+authors = [
+    { name = "Your Company", email = "you@example.com" }
+]
+description = "Validates and normalizes Customer mobile numbers (E.164, +CC...) with cross-Customer duplicate detection and on-save format upgrade."
+requires-python = ">=3.10"
+readme = "README.md"
+dynamic = ["version"]
+dependencies = [
+    "phonenumbers>=8.13",
+]
+
+[build-system]
+requires = ["flit_core >=3.4,<4"]
+build-backend = "flit_core.buildapi"
+
+[tool.bench.frappe-dependencies]
+frappe = ">=15.0.0,<17.0.0"
