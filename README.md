@@ -4,8 +4,8 @@ Frappe/ERPNext app that enforces consistent mobile-number handling on the
 Customer doctype:
 
 - Stores numbers in **E.164** format (`+CC<national-number>`).
-- **Quick-entry country-code picker** with 38 countries and per-country
-  placeholder examples.
+- **Quick-entry country-code picker** with 72 countries (alphabetized) and
+  per-country placeholder examples.
 - **Server-side validation** via the `phonenumbers` library. Rejects landlines
   (`FIXED_LINE`) and anything that's not a valid phone number.
 - **Cross-Customer duplicate detection**: any save (add or edit) whose
