@@ -215,19 +215,20 @@ def _check_duplicate_and_upgrade(doc):
             break
 
     if not clean_holder:
-        # Nobody owns the clean format yet — promote the first dirty match.
-        first = matches[0]
-        existing_mobile = (first.get("mobile_no") or "").strip()
-        existing_intl = (first.get("custom_mobile_intl") or "").strip()
-        if existing_mobile != new_num:
-            frappe.db.set_value(
-                "Customer", first["name"], "mobile_no", new_num, update_modified=False
-            )
-        if existing_intl != new_num:
-            frappe.db.set_value(
-                "Customer", first["name"], "custom_mobile_intl", new_num, update_modified=False
-            )
-        frappe.db.commit()
+        # Schedule the format-upgrade for a background worker. We can't do
+        # it inline because we're about to `frappe.throw(...)`, and
+        # committing here to preserve the upgrade would also commit the
+        # in-progress autoname series increment — leaving a gap in Customer
+        # IDs (e.g. CUST-...-00050 followed by CUST-...-00052, skipping 51).
+        # The worker runs the upgrade in its own transaction after this
+        # request's rollback finishes, so the series counter rolls back
+        # cleanly with no gap.
+        frappe.enqueue(
+            "customer_mobile_validation.customer._upgrade_customer_format",
+            queue="short",
+            customer_name=matches[0]["name"],
+            new_num=new_num,
+        )
 
     names = [m["name"] for m in matches]
     if len(names) == 1:
@@ -241,6 +242,44 @@ def _check_duplicate_and_upgrade(doc):
             "Please use one of the existing records instead."
         ).format(frappe.bold(new_num), len(names), frappe.bold(", ".join(names)))
     frappe.throw(msg, frappe.DuplicateEntryError)
+
+
+def _upgrade_customer_format(customer_name, new_num):
+    """Background job: bring an existing Customer's mobile to the clean
+    +CC... format. Runs after the originating save has been rolled back, in
+    its own transaction. Keeping the upgrade out of `validate` avoids any
+    mid-request commit, which is what previously caused the Customer-ID
+    series to skip numbers on duplicate-rejected saves.
+    """
+    if not frappe.db.exists("Customer", customer_name):
+        return
+    row = frappe.db.get_value(
+        "Customer", customer_name, ["mobile_no", "custom_mobile_intl"], as_dict=True
+    )
+    if not row:
+        return
+    existing_mobile = (row.get("mobile_no") or "").strip()
+    existing_intl = (row.get("custom_mobile_intl") or "").strip()
+    if existing_mobile == new_num and existing_intl == new_num:
+        return  # already upgraded
+
+    # Re-check that no other customer owns the clean value (could have
+    # happened between enqueue time and now). If so, leave this one alone —
+    # the UNIQUE index on mobile_no would reject the write anyway.
+    collision = frappe.db.sql(
+        """SELECT name FROM `tabCustomer`
+           WHERE name <> %s AND (mobile_no = %s OR custom_mobile_intl = %s)
+           LIMIT 1""",
+        (customer_name, new_num, new_num),
+    )
+    if collision:
+        return
+
+    if existing_mobile != new_num:
+        frappe.db.set_value("Customer", customer_name, "mobile_no", new_num, update_modified=False)
+    if existing_intl != new_num:
+        frappe.db.set_value("Customer", customer_name, "custom_mobile_intl", new_num, update_modified=False)
+    frappe.db.commit()
 
 
 def validate_customer(doc, method):

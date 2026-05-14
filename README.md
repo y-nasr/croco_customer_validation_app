@@ -10,9 +10,11 @@ Customer doctype:
   (`FIXED_LINE`) and anything that's not a valid phone number.
 - **Cross-Customer duplicate detection**: any save (add or edit) whose
   national-subscriber number matches another Customer is refused with a
-  `DuplicateEntryError` that names the existing record(s). As a side effect,
+  `DuplicateEntryError` that names every matching record. As a side effect,
   the existing record's stored format is opportunistically migrated to the
-  clean `+CC...` form.
+  clean `+CC...` form — done in a **background worker** (not inline) so
+  the autoname series counter rolls back cleanly with the rejected save
+  and Customer IDs don't skip numbers.
 - **Bidirectional sync** between `mobile_no` and a custom `custom_mobile_intl`
   field so quick-entry and full-form writes always end up consistent.
 - All behavior is **gated behind a single feature flag** that the
