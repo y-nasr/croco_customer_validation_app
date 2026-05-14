@@ -223,12 +223,20 @@ def _check_duplicate_and_upgrade(doc):
         # The worker runs the upgrade in its own transaction after this
         # request's rollback finishes, so the series counter rolls back
         # cleanly with no gap.
-        frappe.enqueue(
-            "customer_mobile_validation.customer._upgrade_customer_format",
-            queue="short",
-            customer_name=matches[0]["name"],
-            new_num=new_num,
-        )
+        try:
+            frappe.enqueue(
+                "customer_mobile_validation.customer._upgrade_customer_format",
+                queue="short",
+                customer_name=matches[0]["name"],
+                new_num=new_num,
+                expected_national=nn,
+            )
+        except Exception:
+            # Redis / RQ unavailable — log but don't mask the duplicate
+            # error the user is about to see. The upgrade just doesn't run;
+            # dedup still works on the next save because the SQL pre-filter
+            # normalizes both sides.
+            frappe.log_error(title="customer_mobile_validation: enqueue upgrade failed")
 
     names = [m["name"] for m in matches]
     if len(names) == 1:
@@ -244,12 +252,17 @@ def _check_duplicate_and_upgrade(doc):
     frappe.throw(msg, frappe.DuplicateEntryError)
 
 
-def _upgrade_customer_format(customer_name, new_num):
+def _upgrade_customer_format(customer_name, new_num, expected_national):
     """Background job: bring an existing Customer's mobile to the clean
     +CC... format. Runs after the originating save has been rolled back, in
     its own transaction. Keeping the upgrade out of `validate` avoids any
     mid-request commit, which is what previously caused the Customer-ID
     series to skip numbers on duplicate-rejected saves.
+
+    `expected_national` is the national-subscriber digits we expected the
+    customer to still have when we scheduled the upgrade. If those have
+    changed in the meantime (another user edited the customer's mobile),
+    we abort — overwriting their edit would be wrong.
     """
     if not frappe.db.exists("Customer", customer_name):
         return
@@ -263,9 +276,16 @@ def _upgrade_customer_format(customer_name, new_num):
     if existing_mobile == new_num and existing_intl == new_num:
         return  # already upgraded
 
-    # Re-check that no other customer owns the clean value (could have
-    # happened between enqueue time and now). If so, leave this one alone —
-    # the UNIQUE index on mobile_no would reject the write anyway.
+    # Race-guard: someone may have edited the existing customer's mobile
+    # between enqueue and now. Only proceed if the national-subscriber
+    # digits still match the value that triggered the upgrade.
+    current_national = _national_number(existing_intl) or _national_number(existing_mobile)
+    if current_national != expected_national:
+        return
+
+    # Re-check that no other customer owns the clean value. If so, leave
+    # this one alone — the UNIQUE index on mobile_no would reject the
+    # write anyway.
     collision = frappe.db.sql(
         """SELECT name FROM `tabCustomer`
            WHERE name <> %s AND (mobile_no = %s OR custom_mobile_intl = %s)
